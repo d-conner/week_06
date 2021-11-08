@@ -15,7 +15,8 @@ if(! require("pacman")) install.packages("pacman")
 pacman::p_load(
   tidyverse,
   here,
-  rvest
+  rvest, 
+  fuzzyjoin
 )
 ```
 
@@ -27,6 +28,31 @@ pacman::p_load(
 - End with `ing` or `ise.`
 
 ```{r}
+word_set <- c("arrive", "rhythm", "tired", "filigreed", "extending", "exercise", "WISE", "lionize", "bring", "garden", "crop", "weed", "dined", "wyrd", "sine", "strategy", "Cwmystwyth", "tied", "Under", "FREED")
+
+word_df <- tibble(word_set)
+
+# Table-form evaluation
+word_df %>%
+mutate(init_vowel = str_detect(word_set, pattern = "^[aeiouAEIOU]"),
+       all_consonants = str_detect(word_set, pattern = "^[^aeiouAEIOU]{2,}$"),            # specify ALL by notating both init and end of string
+ 
+       end_ed_only = str_detect(word_set, pattern = "[^eE][Ee][Dd]$"),
+       end_ing_ise = str_detect(word_set, pattern = "ise$|ing$|ING$|ISE$")
+       )
+
+# Filter and display entries meeting criteria
+word_df %>%
+  filter(str_detect(word_set, pattern = "^[aeiouAEIOU]"))  # initial vowel
+
+word_df %>%
+  filter(str_detect(word_set, pattern = "^[^aeiouAEIOU]{2,}$"))  # all consonants
+
+word_df %>%
+  filter(str_detect(word_set, pattern = "[^eE][eE][Dd]$"))  # end in ed NOT eed
+
+word_df %>%
+  filter(str_detect(word_set, pattern = "ise$|ing$|ING$|ISE$"))  # end in ise OR ing
 
 ```
 
@@ -34,6 +60,53 @@ pacman::p_load(
 2. Create a regular expression that will match telephone numbers as commonly written in the United States.
 
 ```{r}
+phone_set <- c("212 450 3929",
+  "(212) 555 9980",
+  "(215)867-5309",
+  "312.973.0926",
+  "302-831-4500",
+  "(857) 321 - 5482",
+  "845-818-9236",
+  "917-303-4501",
+  "412.665.7738",
+  "(717)433-9872",
+  "5204525676")
+
+phone_numbers_df <- tibble(phone_set)
+
+# input US number to match, any format
+number_seek <- "215-867-5309"
+
+# Table-form evaluation
+phone_numbers_df %>%
+mutate(number_strip = str_remove_all(phone_set, pattern = "\\D"),
+       num_seek_strip = str_remove_all(number_seek, pattern = "\\D"),
+      # number_match = str_detect(number_strip, pattern = "2158675309"),
+          # hard code matching sequence
+       number_match = str_detect(number_strip, pattern = num_seek_strip),
+       NY_number = str_detect(number_strip, pattern = "^212|^845"),
+       PA_number = str_detect(number_strip, pattern = "^215|^412|^717"))
+
+# Filter and display entries matching `number_seek`
+phone_numbers_df %>%
+  mutate(
+    number_strip = str_remove_all(phone_set, pattern = "\\D"),
+          # strip data set numbers of punctuation
+    num_seek_strip = str_remove_all(number_seek, pattern = "\\D")
+          # strip seek input numbers of punctuation
+        ) %>%
+    filter(str_detect(number_strip, pattern = num_seek_strip)) #filter matches 
+
+
+# match area code: one selection at a time
+area_code_seek <- "215"
+
+phone_numbers_df %>%
+  mutate(
+    number_strip = str_remove_all(phone_set, pattern = "\\D")
+          # strip data set numbers of punctuation
+        ) %>%
+  filter(str_starts(number_strip, pattern = area_code_seek)) #filter matches w matching start 
 
 ```
 
@@ -44,7 +117,8 @@ We'll be exploring Bob Ross's paintings.
 ```{r}
 url <- "https://raw.githubusercontent.com/jwilber/Bob_Ross_Paintings/master/data/bob_ross_paintings.csv"
 
-
+paintings <- read.csv(url)
+glimpse(paintings)
 ```
 
 The following code will extract each episode and its air date from the [Joy of Painting Wikipedia page](https://en.wikipedia.org/wiki/The_Joy_of_Painting).
@@ -71,24 +145,102 @@ episode_list <- elements[str_detect(elements, "([A-Za-z]+ [0-9]{1,2}, [0-9]{4})"
 Name this dataframe `episode_list_df`.
 
 ```{r}
+# List entry format  "\"A Walk in the Woods\" (January 11, 1983) Any notes"
+# Relatively few episodes have notes
+# entries 1-403 are episodes, 404+ are references formatted as "^ \"List of guest painters on 'The Joy of Painting'\". TwoInchBrush.com. Retrieved September 28, 2016."
 
+episode_list_df <-
+  tibble(episode_list) %>%
+  # extract
+  mutate(episode = str_extract(episode_list, pattern = "^[\"].{1,}[\"]"),
+         air_date = str_extract(episode_list, pattern = "\\(.{1,}\\)"),
+         note = str_extract(episode_list, pattern = "\\).{1,}$")) %>%
+  # filter non-episode entries
+  filter(! is.na(episode)) %>%
+  # clean
+  mutate(episode = str_remove_all(episode, pattern ="\""),
+         episode = str_trim(episode, side = "both") ) %>%
+  mutate(air_date = lubridate::mdy(air_date)) %>%
+  mutate(note = str_remove(note, pattern = "\\).")) %>%
+  select(-episode_list)
+  
 ```
 
 5. Join the `paintings` dataframe to the `episode_list_df` dataframe.
 
 ```{r}
+# normal joins weren't matching well 
 
+paintings_joined <-
+    stringdist_inner_join(
+            paintings, 
+            episode_list_df, 
+            by = c("painting_title" = "episode"),
+            ignore_case = TRUE) %>%
+    select(painting_title, season, "episode_num" = episode.x, 
+           air_date, "episode_title" = episode.y, note, 
+           everything())
+
+glimpse(paintings_joined)
+
+count(paintings_joined, is.na(air_date))  # check for unjoined rows
+# fuzzyjoin with stringdist makes a match for all episode entries!
 ```
 
 6. What was Bob Ross's favorite color to paint with in each season of his show? By year?
 
 ```{r}
+paintings_joined %>%
+  group_by(season) %>%
+  summarise(
+    across(Black_Gesso:Alizarin_Crimson, ~sum(.)) ) %>% # Sum each color by season
+  rowwise() %>%   # required for c_across in next op
+  mutate(season_favorite = names(.)[which.max(c_across(Black_Gesso:Alizarin_Crimson))]) %>%   # extract title from max value across summarized columns
+  ungroup()   %>% 
+  select(season, season_favorite)
 
 ```
+The table shows the most-used colors for 31 seasons.
+
+```{r}
+paintings_joined %>%
+  mutate(year = lubridate::year(air_date)) %>%  # extract year for sorting
+  group_by(year) %>%
+  summarise(
+    across(Black_Gesso:Alizarin_Crimson, ~sum(.)) ) %>% # Sum each color by year
+  rowwise() %>%   # required for c_across in next op
+  mutate(year_favorite = names(.)[which.max(c_across(Black_Gesso:Alizarin_Crimson))]) %>%   # extract title from max value across summarized columns
+  ungroup()   %>% 
+  select(year, year_favorite)
+
+```
+The table shows the most-used colors for 12 years on air. Each year covers multiple seasons, so second-place colors might surpass the single-season favorite over a longer period.  Some episodes also had multiple air dates in multiple years, moving data that may have been double-counted in seasons to single-count for the given year. As a result, the top color by year may not match the top color(s) by season.
 
 7. What words are used most frequently in the titles of his paintings? Did this change over time?
 
 ```{r}
 
+# word frequency in titles
+paintings_joined %>%
+  select(painting_title) %>%
+  mutate(word_ct = str_split(painting_title, " ")) %>%   # extract string into words - as list-column
+  unnest(cols = c(word_ct)) %>%    # extract list-column to entries in a single non-list column
+  count(word_ct, sort = T) %>%      # count word frequency for whole data column
+  slice_head(n = 10)                # summarize with a slice of top 10
+```  
+  Top 10 most common painting title words & their frequency over the full run of The Joy of Painting.
+  
+```{r}
+# words frequency in titles, grouped by time - use season again 
+paintings_joined %>%
+  select(season, painting_title) %>%
+  mutate(word_ct = str_split(painting_title, " ")) %>%
+  unnest(cols = c(word_ct)) %>%
+  group_by(season) %>%
+  count(word_ct, sort = T) %>%  
+  slice_head(n = 1)      %>%    # select most common title word
+    ungroup() 
 ```
+Repeat process, only grouping data by season and selecting top word for each year. First half of seasons have mainly a place as the most common word (e.g. Mountain, Cabin), while later seasons have articles (a, an, the) as the most common word within the season's titles. This might point to more descriptive titles or more varied subject matter in later seasons - some later seasons have most-frequent use counts of only 1 or 2. 
 
+The distribution of the words reflects the frequency seen in the overall top-10 title words: lots of "Mountain" and "Winter", followed by "the". 
